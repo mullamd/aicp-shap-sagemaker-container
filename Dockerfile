@@ -14,9 +14,19 @@ COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install -r requirements.txt
 
-# Copy inference script to the code directory
+# ✅ Copy inference script to /opt/ml/code
 COPY inference.py /opt/ml/code/
 
-# Set required SageMaker environment variable
+# ✅ SageMaker needs to know what script to run
 ENV SAGEMAKER_PROGRAM=inference.py
 ENV PYTHONPATH=/opt/ml/code
+
+# ✅ Required: tell SageMaker this is the entrypoint
+ENV SM_NUM_GPUS=0
+ENV SM_MODEL_DIR=/opt/ml/model
+ENV SM_OUTPUT_DATA_DIR=/opt/ml/output
+ENV SM_INPUT_DATA_DIR=/opt/ml/input
+ENV SM_CHANNEL_TRAINING=/opt/ml/input/data/training
+
+# ✅ Start inference service
+ENTRYPOINT ["python", "/opt/ml/code/inference.py"]

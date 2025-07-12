@@ -1,5 +1,5 @@
-xgboost==1.5.0
-shap==0.41.0
+xgboost==1.7.6           # Upgrade to a more stable version for SHAP compatibility
+shap==0.44.1             # Match to latest SHAP that works well with xgboost
 numpy
 pandas
 scikit-learn

@@ -1,23 +1,22 @@
-# Use Amazon SageMaker Python base image (Python 3.8)
+# Use lightweight Python base image
 FROM python:3.8-slim
 
 # Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 
-# Create working directory
-WORKDIR /opt/program
+# Create SageMaker-required folders
+WORKDIR /opt/ml
+RUN mkdir -p /opt/ml/model /opt/ml/code
 
-# Install required libraries
+# Copy requirements and install dependencies
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install -r requirements.txt
 
-# Copy inference code
-COPY inference.py .
+# Copy inference script to the code directory
+COPY inference.py /opt/ml/code/
 
-# Define the entry point for inference
+# Set required SageMaker environment variable
 ENV SAGEMAKER_PROGRAM=inference.py
-
-# (Optional) Expose port if debugging locally
-EXPOSE 8080
+ENV PYTHONPATH=/opt/ml/code

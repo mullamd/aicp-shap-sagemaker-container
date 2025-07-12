@@ -1,0 +1,70 @@
+name: Build and Push to Amazon ECR
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      REPO_NAME: ${{ secrets.ECR_REPOSITORY }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      run: |
+        aws ecr get-login-password --region $AWS_REGION \
+        | docker login --username AWS \
+        --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+    - name: Build, tag, and push image
+      run: |
+        docker build -t $REPO_NAME .
+        docker tag $REPO_NAME:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO_NAME:latest
+        docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO_NAME:latest
+
+    # ✅ Email on success
+    - name: Send email on success
+      if: success()
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 465
+        username: ${{ secrets.EMAIL_USERNAME }}
+        password: ${{ secrets.EMAIL_PASSWORD }}
+        subject: ✅ Docker Image Push Succeeded
+        to: your_email@example.com
+        from: GitHub Actions <${{ secrets.EMAIL_USERNAME }}>
+        body: |
+          The Docker image for aicp-shap-sagemaker-container was successfully built and pushed to ECR.
+
+    # ❌ Email on failure
+    - name: Send email on failure
+      if: failure()
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 465
+        username: ${{ secrets.EMAIL_USERNAME }}
+        password: ${{ secrets.EMAIL_PASSWORD }}
+        subject: ❌ Docker Image Push Failed
+        to: your_email@example.com
+        from: GitHub Actions <${{ secrets.EMAIL_USERNAME }}>
+        body: |
+          The Docker image push to ECR failed. Please check the logs and fix any issues.
+

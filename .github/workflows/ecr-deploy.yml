@@ -48,7 +48,7 @@ jobs:
         username: ${{ secrets.EMAIL_USERNAME }}
         password: ${{ secrets.EMAIL_PASSWORD }}
         subject: ✅ Docker Image Push Succeeded
-        to: your_email@example.com
+        to: mm.cloudenginner@gmail.com
         from: GitHub Actions <${{ secrets.EMAIL_USERNAME }}>
         body: |
           The Docker image for aicp-shap-sagemaker-container was successfully built and pushed to ECR.

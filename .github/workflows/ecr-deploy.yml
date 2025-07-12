@@ -1,4 +1,4 @@
-name: Build and Push to Amazon ECR
+name: deploy
 
 on:
   push:
@@ -6,13 +6,8 @@ on:
       - main
 
 jobs:
-  deploy:
+  build-and-push:
     runs-on: ubuntu-latest
-
-    env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-      REPO_NAME: ${{ secrets.ECR_REPOSITORY }}
 
     steps:
     - name: Checkout code
@@ -23,22 +18,22 @@ jobs:
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+        aws-region: ${{ secrets.AWS_REGION }}
 
     - name: Login to Amazon ECR
       id: login-ecr
-      run: |
-        aws ecr get-login-password --region $AWS_REGION \
-        | docker login --username AWS \
-        --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+      uses: aws-actions/amazon-ecr-login@v1
 
     - name: Build, tag, and push image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
       run: |
-        docker build -t $REPO_NAME .
-        docker tag $REPO_NAME:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO_NAME:latest
-        docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO_NAME:latest
+        IMAGE_TAG=latest
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
-    # ✅ Email on success
+    # ✅ Email notification on success
     - name: Send email on success
       if: success()
       uses: dawidd6/action-send-mail@v3
@@ -47,13 +42,14 @@ jobs:
         server_port: 465
         username: ${{ secrets.EMAIL_USERNAME }}
         password: ${{ secrets.EMAIL_PASSWORD }}
-        subject: ✅ Docker Image Push Succeeded
-        to: mm.cloudenginner@gmail.com
-        from: GitHub Actions <${{ secrets.EMAIL_USERNAME }}>
-        body: |
-          The Docker image for aicp-shap-sagemaker-container was successfully built and pushed to ECR.
+        subject: "✅ ECR Build & Push Succeeded"
+        to: ${{ secrets.EMAIL_USERNAME }}
+        from: ${{ secrets.EMAIL_USERNAME }}
+        body: "Your Docker image was successfully pushed to Amazon ECR."
+        secure: true
+        debug: true
 
-    # ❌ Email on failure
+    # ✅ Email notification on failure
     - name: Send email on failure
       if: failure()
       uses: dawidd6/action-send-mail@v3
@@ -62,9 +58,9 @@ jobs:
         server_port: 465
         username: ${{ secrets.EMAIL_USERNAME }}
         password: ${{ secrets.EMAIL_PASSWORD }}
-        subject: ❌ Docker Image Push Failed
-        to: your_email@example.com
-        from: GitHub Actions <${{ secrets.EMAIL_USERNAME }}>
-        body: |
-          The Docker image push to ECR failed. Please check the logs and fix any issues.
-
+        subject: "❌ ECR Build & Push Failed"
+        to: ${{ secrets.EMAIL_USERNAME }}
+        from: ${{ secrets.EMAIL_USERNAME }}
+        body: "Something went wrong in the GitHub Actions workflow. Please check the logs."
+        secure: true
+        debug: true

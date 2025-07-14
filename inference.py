@@ -3,14 +3,16 @@ import xgboost as xgb
 import shap
 import numpy as np
 import json
+from flask import Flask, request, jsonify
 
-# Load model from model directory
+# Load model from /opt/ml/model directory
 def model_fn(model_dir):
     model = xgb.Booster()
-    model.load_model(os.path.join(model_dir, "xgboost-model.json"))
+    model_path = os.path.join(model_dir, "xgboost-model.json")
+    model.load_model(model_path)
     return model
 
-# Parse input CSV or JSON
+# Parse input
 def input_fn(request_body, request_content_type):
     expected_features = [
         "claim_amount",
@@ -31,14 +33,10 @@ def input_fn(request_body, request_content_type):
 
     raise ValueError(f"Unsupported content type: {request_content_type}")
 
-# Perform prediction and explanation
+# Perform prediction + SHAP explanation
 def predict_fn(input_data, model):
     if input_data.shape[1] != 5:
         raise ValueError(f"Expected 5 features, got {input_data.shape[1]}")
-
-    dmatrix = xgb.DMatrix(input_data)
-    score = float(model.predict(dmatrix)[0])
-    prediction = "FRAUD" if score > 0.5 else "LEGIT"
 
     feature_names = [
         "claim_amount",
@@ -48,46 +46,70 @@ def predict_fn(input_data, model):
         "location_risk_score"
     ]
 
-    # SHAP explanation (wrapped in try block)
+    # ✅ Fix: Pass feature names to DMatrix
+    dmatrix = xgb.DMatrix(input_data, feature_names=feature_names)
+    score = float(model.predict(dmatrix)[0])
+    prediction = "FRAUD" if score > 0.5 else "LEGIT"
+
     try:
         explainer = shap.TreeExplainer(model)
         shap_values = explainer.shap_values(dmatrix)
-        shap_values = shap_values[0]  # for single prediction
+        shap_values = shap_values[0]  # Single row
 
-        top_indices = np.argsort(np.abs(shap_values))[::-1][:3]
-        top_features = [
+        # Sort by absolute SHAP impact
+        sorted_indices = np.argsort(np.abs(shap_values))[::-1]
+        all_features = [
             {
                 "feature": feature_names[i],
-                "impact": float(round(shap_values[i], 4))
+                "impact": round(shap_values[i], 1)
             }
-            for i in top_indices
+            for i in sorted_indices
         ]
 
-        tech_expl = ", ".join([f"{f['feature']} ({f['impact']:+})" for f in top_features])
+        # Build technical explanation string
+        tech_expl = ", ".join([f"{f['feature']} ({f['impact']:+.1f})" for f in all_features])
 
+        # Plain English explanation
         reason_map = {
-            "claim_amount": "the claim has a high amount",
-            "estimated_damage": "the estimated damage is low compared to the claim",
-            "vehicle_year": "the vehicle is older",
-            "days_since_policy_start": "the claim was filed soon after the policy started",
-            "location_risk_score": "the claim occurred in a high-risk area"
+            "claim_amount": {
+                "pos": "the claim has a high amount",
+                "neg": "the claim amount is reasonable"
+            },
+            "estimated_damage": {
+                "pos": "the estimated damage is low compared to the claim",
+                "neg": "the estimated damage matches the claim"
+            },
+            "vehicle_year": {
+                "pos": "the vehicle is older",
+                "neg": "the vehicle is newer"
+            },
+            "days_since_policy_start": {
+                "pos": "the claim was filed soon after the policy started",
+                "neg": "the policy has been active for a long time"
+            },
+            "location_risk_score": {
+                "pos": "the claim occurred in a high-risk area",
+                "neg": "the location is low-risk"
+            }
         }
 
-        reason_phrases = [reason_map.get(f["feature"], f["feature"]) for f in top_features]
-        plain_text = "The claim is suspicious because " + ", ".join(reason_phrases) + "."
+        top3 = all_features[:3]
+        plain_reasons = [
+            reason_map[f["feature"]]["pos" if f["impact"] > 0 else "neg"]
+            for f in top3
+        ]
 
-        full_explanation = f"Top features: {tech_expl}. {plain_text}"
+        plain_text = (
+            "The claim is suspicious because " + ", ".join(plain_reasons) + "."
+            if prediction == "FRAUD"
+            else "The claim appears legitimate based on current features."
+        )
 
         return {
             "fraud_score": round(score, 4),
             "fraud_prediction": prediction,
-            "fraud_explanation": full_explanation,
-            "shap_feature_1": top_features[0]["feature"],
-            "shap_impact_1": top_features[0]["impact"],
-            "shap_feature_2": top_features[1]["feature"],
-            "shap_impact_2": top_features[1]["impact"],
-            "shap_feature_3": top_features[2]["feature"],
-            "shap_impact_3": top_features[2]["impact"]
+            "fraud_explanation": plain_text,
+            "shap_features": [f"{f['feature']} ({f['impact']:+.1f})" for f in all_features]
         }
 
     except Exception as e:
@@ -101,3 +123,26 @@ def predict_fn(input_data, model):
 # Format output
 def output_fn(prediction, response_content_type):
     return json.dumps(prediction)
+
+# ========== Flask App for Local & SageMaker ========== #
+app = Flask(__name__)
+model = model_fn("/opt/ml/model")
+
+@app.route("/ping", methods=["GET"])
+def ping():
+    return jsonify({"status": "ok"}), 200
+
+@app.route("/invocations", methods=["POST"])
+def invoke():
+    try:
+        content_type = request.content_type
+        data = request.data.decode("utf-8")
+        input_data = input_fn(data, content_type)
+        prediction = predict_fn(input_data, model)
+        return output_fn(prediction, content_type), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ✅ Local test entry point
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)

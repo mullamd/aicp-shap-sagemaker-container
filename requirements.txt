@@ -3,5 +3,4 @@ shap==0.44.1               # Compatible with latest xgboost
 numpy==1.24.4
 pandas==1.5.3
 scikit-learn==1.2.2
-flask==2.2.5               # Pin for consistency
 boto3==1.34.115            # ✅ Required for AWS S3 interactions

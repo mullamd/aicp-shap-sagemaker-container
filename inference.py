@@ -1,8 +1,10 @@
 import os
+import json
+import uuid
+import boto3
 import xgboost as xgb
 import shap
 import numpy as np
-import json
 from flask import Flask, request, jsonify
 
 # Load model from /opt/ml/model directory
@@ -25,11 +27,11 @@ def input_fn(request_body, request_content_type):
     if request_content_type == "application/json":
         data = json.loads(request_body)
         values = [float(data[f]) for f in expected_features]
-        return np.array([values])
+        return np.array([values]), data
 
     elif request_content_type == "text/csv":
         values = [float(x) for x in request_body.strip().split(",")]
-        return np.array([values])
+        return np.array([values]), {}
 
     raise ValueError(f"Unsupported content type: {request_content_type}")
 
@@ -46,7 +48,6 @@ def predict_fn(input_data, model):
         "location_risk_score"
     ]
 
-    # ✅ Fix: Pass feature names to DMatrix
     dmatrix = xgb.DMatrix(input_data, feature_names=feature_names)
     score = float(model.predict(dmatrix)[0])
     prediction = "FRAUD" if score > 0.5 else "LEGIT"
@@ -54,9 +55,8 @@ def predict_fn(input_data, model):
     try:
         explainer = shap.TreeExplainer(model)
         shap_values = explainer.shap_values(dmatrix)
-        shap_values = shap_values[0]  # Single row
+        shap_values = shap_values[0]
 
-        # Sort by absolute SHAP impact
         sorted_indices = np.argsort(np.abs(shap_values))[::-1]
         all_features = [
             {
@@ -66,10 +66,6 @@ def predict_fn(input_data, model):
             for i in sorted_indices
         ]
 
-        # Build technical explanation string
-        tech_expl = ", ".join([f"{f['feature']} ({f['impact']:+.1f})" for f in all_features])
-
-        # Plain English explanation
         reason_map = {
             "claim_amount": {
                 "pos": "the claim has a high amount",
@@ -137,10 +133,27 @@ def invoke():
     try:
         content_type = request.content_type
         data = request.data.decode("utf-8")
-        input_data = input_fn(data, content_type)
+        input_data, original_input = input_fn(data, content_type)
         prediction = predict_fn(input_data, model)
+
+        # ✅ Extract claim_id
+        claim_id = original_input.get("claim_id", f"unknown-{uuid.uuid4()}")
+        prediction["claim_id"] = claim_id
+
+        # ✅ Save to S3
+        s3 = boto3.client("s3")
+        output_key = f"processed/fraud-predicted-claims-data/fraud_prediction_{claim_id}.json"
+        s3.put_object(
+            Bucket="aicp-claims-data",
+            Key=output_key,
+            Body=json.dumps(prediction)
+        )
+        print(f"✅ Saved prediction to S3: {output_key}")
+
         return output_fn(prediction, content_type), 200
+
     except Exception as e:
+        print(f"❌ ERROR: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 # ✅ Local test entry point

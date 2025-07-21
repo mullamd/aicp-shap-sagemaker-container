@@ -31,3 +31,4 @@ ENV SM_CHANNEL_TRAINING=/opt/ml/input/data/training
 
 # ✅ Start inference script directly (works locally & in SageMaker)
 ENTRYPOINT ["python", "/opt/ml/code/inference.py"]
+lets

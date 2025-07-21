@@ -1,4 +1,4 @@
-import os
+import os 
 import json
 import uuid
 import boto3
@@ -8,16 +8,15 @@ import numpy as np
 import logging
 from flask import Flask, request, jsonify
 
-# ✅ Configure logging for CloudWatch visibility
+# ✅ Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load model from /opt/ml/model directory
+# Load model
 def model_fn(model_dir):
     logger.info("🔁 Loading model from: %s", model_dir)
     model = xgb.Booster()
-    model_path = os.path.join(model_dir, "xgboost-model.json")
-    model.load_model(model_path)
+    model.load_model(os.path.join(model_dir, "xgboost-model.json"))
     logger.info("✅ Model loaded successfully.")
     return model
 
@@ -44,7 +43,7 @@ def input_fn(request_body, request_content_type):
 
     raise ValueError(f"Unsupported content type: {request_content_type}")
 
-# Perform prediction + SHAP explanation
+# SHAP + prediction
 def predict_fn(input_data, model):
     if input_data.shape[1] != 5:
         raise ValueError(f"Expected 5 features, got {input_data.shape[1]}")
@@ -65,9 +64,7 @@ def predict_fn(input_data, model):
 
     try:
         explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(dmatrix)
-        shap_values = shap_values[0]
-
+        shap_values = explainer.shap_values(dmatrix)[0]
         sorted_indices = np.argsort(np.abs(shap_values))[::-1]
         all_features = [
             {
@@ -133,7 +130,7 @@ def output_fn(prediction, response_content_type):
     logger.info("📤 Returning prediction output")
     return json.dumps(prediction)
 
-# ========== Flask App for Local & SageMaker ========== #
+# Flask App
 app = Flask(__name__)
 model = model_fn("/opt/ml/model")
 
@@ -155,6 +152,33 @@ def invoke():
         claim_id = original_input.get("claim_id", f"unknown-{uuid.uuid4()}")
         prediction["claim_id"] = claim_id
 
+        # ✅ Add ECS-compatible metadata
+        prediction.update({
+            "claim_amount_requested": original_input.get("claim_amount", 0),
+            "estimated_damage_cost": original_input.get("estimated_damage", 0),
+            "vehicle_year": original_input.get("vehicle_year", 0),
+            "days_since_policy_start": original_input.get("days_since_policy_start", 0),
+            "location_risk_score": original_input.get("location_risk_score", 0),
+
+            "policy_number": "",
+            "claimant_name": "",
+            "date_of_loss": "",
+            "type_of_claim": "",
+            "accident_location": "",
+            "vehicle_make": "",
+            "vehicle_model": "",
+            "license_plate": "",
+            "description_of_damage": "",
+            "is_valid": "",
+            "textract_status": "",
+            "dq_validation_status": "",
+            "claim_to_damage_ratio": 0,
+            "previous_claims_count": 0,
+            "vehicle_age": 0,
+            "incident_time": "",
+            "processed_by": "aicp-shap-sagemaker-container"
+        })
+
         # ✅ Save to S3
         s3 = boto3.client("s3")
         output_key = f"processed/fraud-predicted-claims-data/fraud_prediction_{claim_id}.json"
@@ -171,7 +195,7 @@ def invoke():
         logger.error(f"❌ ERROR: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-# ✅ Local test entry point
+# Local
 if __name__ == "__main__":
     logger.info("👟 Running locally on port 8080")
     app.run(host="0.0.0.0", port=8080)

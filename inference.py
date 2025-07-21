@@ -5,13 +5,20 @@ import boto3
 import xgboost as xgb
 import shap
 import numpy as np
+import logging
 from flask import Flask, request, jsonify
+
+# ✅ Configure logging for CloudWatch visibility
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load model from /opt/ml/model directory
 def model_fn(model_dir):
+    logger.info("🔁 Loading model from: %s", model_dir)
     model = xgb.Booster()
     model_path = os.path.join(model_dir, "xgboost-model.json")
     model.load_model(model_path)
+    logger.info("✅ Model loaded successfully.")
     return model
 
 # Parse input
@@ -23,6 +30,8 @@ def input_fn(request_body, request_content_type):
         "days_since_policy_start",
         "location_risk_score"
     ]
+
+    logger.info("📥 Parsing input content type: %s", request_content_type)
 
     if request_content_type == "application/json":
         data = json.loads(request_body)
@@ -39,6 +48,8 @@ def input_fn(request_body, request_content_type):
 def predict_fn(input_data, model):
     if input_data.shape[1] != 5:
         raise ValueError(f"Expected 5 features, got {input_data.shape[1]}")
+
+    logger.info("🔮 Performing fraud prediction and SHAP explanation")
 
     feature_names = [
         "claim_amount",
@@ -109,6 +120,7 @@ def predict_fn(input_data, model):
         }
 
     except Exception as e:
+        logger.error("❌ SHAP explanation failed: %s", str(e))
         return {
             "fraud_score": round(score, 4),
             "fraud_prediction": prediction,
@@ -118,6 +130,7 @@ def predict_fn(input_data, model):
 
 # Format output
 def output_fn(prediction, response_content_type):
+    logger.info("📤 Returning prediction output")
     return json.dumps(prediction)
 
 # ========== Flask App for Local & SageMaker ========== #
@@ -126,11 +139,13 @@ model = model_fn("/opt/ml/model")
 
 @app.route("/ping", methods=["GET"])
 def ping():
+    logger.info("📡 Received ping")
     return jsonify({"status": "ok"}), 200
 
 @app.route("/invocations", methods=["POST"])
 def invoke():
     try:
+        logger.info("🚀 Received invocation request")
         content_type = request.content_type
         data = request.data.decode("utf-8")
         input_data, original_input = input_fn(data, content_type)
@@ -148,14 +163,15 @@ def invoke():
             Key=output_key,
             Body=json.dumps(prediction)
         )
-        print(f"✅ Saved prediction to S3: {output_key}")
+        logger.info(f"✅ Saved prediction to S3: {output_key}")
 
         return output_fn(prediction, content_type), 200
 
     except Exception as e:
-        print(f"❌ ERROR: {str(e)}")
+        logger.error(f"❌ ERROR: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 # ✅ Local test entry point
 if __name__ == "__main__":
+    logger.info("👟 Running locally on port 8080")
     app.run(host="0.0.0.0", port=8080)

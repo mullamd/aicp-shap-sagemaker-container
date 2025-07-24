@@ -6,15 +6,17 @@ import numpy as np
 from datetime import datetime
 from dateutil import parser
 from pytz import timezone
+import os
 
 # --- CONFIG ---
 s3_bucket = "aicp-claims-data"
 input_prefix = "processed/DQ-validated-claims-data/"
 output_prefix = "processed/fraud-predicted-claims-data/"
 
-# --- Load XGBoost Booster model ---
+# --- Load XGBoost Booster model from SageMaker directory ---
+model_path = os.environ.get("SM_MODEL_DIR", "/opt/ml/model") + "/xgboost-model.json"
 model = xgb.Booster()
-model.load_model("xgboost-model.json")
+model.load_model(model_path)
 
 # --- SHAP Explainer ---
 explainer = shap.Explainer(model)
@@ -97,12 +99,10 @@ for s3_key in claim_files:
         except json.JSONDecodeError:
             claim_data = json.loads(body.splitlines()[0])
 
-        # Defensive field checks
         if "vehicle_year" not in claim_data or "claim_id" not in claim_data:
             print(f"⚠️ Skipping file {s3_key} due to missing keys.")
             continue
 
-        # Feature engineering
         current_year = datetime.now().year
         claim_to_damage_ratio = claim_data["claim_amount_requested"] / claim_data["estimated_damage_cost"]
         vehicle_age = current_year - int(claim_data["vehicle_year"])
@@ -118,7 +118,7 @@ for s3_key in claim_files:
             "chicago": 0.95,
             "houston": 0.75
         }
-        location_risk_score = 0.6  # default risk
+        location_risk_score = 0.6
         for city, score in location_risk_map.items():
             if city in location:
                 location_risk_score = score
@@ -136,18 +136,15 @@ for s3_key in claim_files:
             incident_time_hour
         ]
 
-        # Create DMatrix with named features
         X_input = xgb.DMatrix(
             data=np.array([input_values]),
             feature_names=features
         )
 
-        # Model prediction
         fraud_prob = model.predict(X_input)[0]
         fraud_class = int(fraud_prob > 0.5)
         shap_values = explainer(X_input)
 
-        # Top 3 SHAP features and dynamic explanations
         top_indices = np.argsort(np.abs(shap_values.values[0]))[::-1][:3]
         explanations = [
             get_dynamic_explanation(features[i], shap_values.values[0][i])
@@ -160,7 +157,6 @@ for s3_key in claim_files:
             [round(float(val) * 10, 2) for val in shap_values.values[0]]
         ))
 
-        # Build output record
         result = {
             "claim_id": claim_data["claim_id"],
             "fraud_score": round(float(fraud_prob) * 10, 1),
@@ -169,7 +165,6 @@ for s3_key in claim_files:
             "shap_values": shap_score_map
         }
 
-        # Save result to S3
         output_filename = f"fraud-claim-{result['claim_id']}__{get_timestamp_str()}.json"
         output_key = f"{output_prefix}{output_filename}"
         s3.put_object(
@@ -186,6 +181,5 @@ for s3_key in claim_files:
         print(f"❌ Error processing file {s3_key}: {str(e)}")
         continue
 
-# Optionally save summary locally
 with open("batch_fraud_predictions.json", "w") as f:
     json.dump(results, f, indent=2)

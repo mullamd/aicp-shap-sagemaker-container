@@ -1,29 +1,35 @@
-name: deploy
+name: AICP - Build Docker, Push to ECR, Redeploy SageMaker
 
 on:
   push:
     branches: [main]
+    paths:
+      - Dockerfile
+      - inference.py
+      - xgboost-model.json
+      - requirements.txt
+      - deploy_sagemaker.py
 
 jobs:
   deploy-to-ecr:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: 📥 Checkout Code
         uses: actions/checkout@v3
 
-      - name: Configure AWS credentials
+      - name: 🔐 Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Login to Amazon ECR
+      - name: 🔐 Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Build, tag, and push image to Amazon ECR
+      - name: 🐳 Build, Tag, and Push Docker Image
         env:
           ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
@@ -32,7 +38,18 @@ jobs:
           docker tag $ECR_REPOSITORY:latest $ECR_REGISTRY/$ECR_REPOSITORY:latest
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-      - name: Send email on success
+      - name: 🚀 Redeploy to SageMaker Endpoint
+        if: success()
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          SAGEMAKER_ROLE: ${{ secrets.SAGEMAKER_ROLE }}
+        run: |
+          pip install boto3 sagemaker
+          python deploy_sagemaker.py
+
+      - name: 📧 Send Email on Success
         if: success()
         uses: dawidd6/action-send-mail@v3
         with:
@@ -40,13 +57,13 @@ jobs:
           server_port: 465
           username: ${{ secrets.EMAIL_USERNAME }}
           password: ${{ secrets.EMAIL_PASSWORD }}
-          subject: "✅ Docker Image Deployment Succeeded"
+          subject: "✅ AICP Docker + SageMaker Deployment Successful"
           to: mm.cloudenginner@gmail.com
           from: ${{ secrets.EMAIL_USERNAME }}
           body: |
-            Your container image has been successfully built and pushed to ECR.
+            ✅ Your AICP fraud detection model has been built, pushed to ECR, and redeployed to SageMaker.
 
-      - name: Send email on failure
+      - name: ❌ Send Email on Failure
         if: failure()
         uses: dawidd6/action-send-mail@v3
         with:
@@ -54,8 +71,9 @@ jobs:
           server_port: 465
           username: ${{ secrets.EMAIL_USERNAME }}
           password: ${{ secrets.EMAIL_PASSWORD }}
-          subject: "❌ Docker Image Deployment Failed"
+          subject: "❌ AICP Deployment Failed"
           to: mm.cloudenginner@gmail.com
           from: ${{ secrets.EMAIL_USERNAME }}
           body: |
-            Something went wrong during Docker build or ECR push. Please check the workflow logs.
+            ❌ Something went wrong during build, ECR push, or SageMaker deployment.
+            Please review the GitHub Actions logs to troubleshoot.

@@ -1,3 +1,4 @@
+flask==2.3.2  # ✅ Required for serving real-time endpoint
 xgboost==1.7.6             # Stable for production
 shap==0.44.1               # Compatible with latest xgboost
 numpy==1.24.4

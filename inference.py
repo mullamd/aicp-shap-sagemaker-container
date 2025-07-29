@@ -17,12 +17,13 @@ bucket = "aicp-claims-data"
 input_prefix = "processed/DQ-validated-claims-data/"
 output_prefix = "processed/fraud-predicted-claims-data/"
 
-# ────────── Model ────────── #
+# ────────── Load Model ────────── #
 model_path = os.path.join(os.environ.get("SM_MODEL_DIR", "/opt/ml/model"), "xgboost-model.json")
 model = xgb.Booster()
 model.load_model(model_path)
 explainer = shap.Explainer(model)
 
+# ────────── Feature Definitions ────────── #
 features = [
     "claim_to_damage_ratio",
     "vehicle_age",
@@ -94,7 +95,7 @@ def invoke():
             (datetime.strptime(claim_data["date_of_loss"], "%Y-%m-%d") -
              datetime.strptime(claim_data["policy_start_date"], "%Y-%m-%d")).days,
             0.95 if "chicago" in claim_data["accident_location"].lower() else 0.6,
-            3  # default to 3 AM if not available
+            3  # default 3 AM
         ]
 
         dmatrix = xgb.DMatrix(np.array([features_values]), feature_names=features)
@@ -130,6 +131,27 @@ def invoke():
     except Exception as e:
         return jsonify(error=str(e), traceback=traceback.format_exc()), 500
 
-# ────────── Main ────────── #
+# ────────── Auto-trigger when run in ECS ────────── #
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    import requests
+    import time
+    from threading import Thread
+
+    # Start Flask in background thread
+    Thread(target=lambda: app.run(host="0.0.0.0", port=8080)).start()
+
+    # Allow Flask to boot
+    time.sleep(2)
+
+    # Read CLAIM_ID from environment and trigger
+    claim_id = os.getenv("CLAIM_ID")
+    if not claim_id:
+        print("❌ CLAIM_ID environment variable not set.")
+        exit(1)
+
+    try:
+        print(f"🚀 Triggering fraud prediction for {claim_id}")
+        response = requests.post("http://localhost:8080/invocations", json={"claim_id": claim_id})
+        print("✅ Prediction result:", response.json())
+    except Exception as e:
+        print("❌ Internal invocation failed:", str(e))

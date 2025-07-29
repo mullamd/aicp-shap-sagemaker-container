@@ -8,6 +8,9 @@ import traceback
 import json
 from datetime import datetime
 from pytz import timezone
+import time
+import requests
+from threading import Thread
 
 # ────────── Flask App ────────── #
 app = Flask(__name__)
@@ -90,7 +93,6 @@ def invoke():
         raw = s3.get_object(Bucket=bucket, Key=key)["Body"].read().decode("utf-8").strip()
         claim_data = json.loads(raw.splitlines()[0]) if "\n" in raw else json.loads(raw)
 
-        # Extract and engineer features
         current_year = datetime.now().year
         features_values = [
             round(claim_data["claim_amount_requested"] / claim_data["estimated_damage_cost"], 2),
@@ -130,28 +132,38 @@ def invoke():
             ContentType="application/json"
         )
 
+        print(f"✅ Saved result to s3://{bucket}/{output_key}")
         return jsonify(result), 200
 
     except Exception as e:
         return jsonify(error=str(e), traceback=traceback.format_exc()), 500
 
 # ────────── ECS Trigger ────────── #
-if __name__ == "__main__":
-    import requests
-    import time
-    from threading import Thread
+def wait_for_server(url="http://localhost:8080/ping", timeout=10):
+    for _ in range(timeout):
+        try:
+            r = requests.get(url)
+            if r.status_code == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+    return False
 
+if __name__ == "__main__":
     # Start Flask server in background
     Thread(target=lambda: app.run(host="0.0.0.0", port=8080)).start()
 
-    # Let server boot
-    time.sleep(2)
+    # Wait until server is ready
+    if not wait_for_server():
+        print("❌ Server did not start within timeout.")
+        os._exit(1)
 
     # Read claim_id from env
     claim_id = os.getenv("CLAIM_ID")
     if not claim_id:
         print("❌ CLAIM_ID environment variable not set.")
-        exit(1)
+        os._exit(1)
 
     try:
         print(f"🚀 Triggering fraud prediction for {claim_id}")

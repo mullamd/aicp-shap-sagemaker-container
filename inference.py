@@ -8,7 +8,6 @@ import traceback
 import json
 from datetime import datetime
 from pytz import timezone
-import requests 
 
 # ────────── Flask App ────────── #
 app = Flask(__name__)
@@ -55,13 +54,17 @@ def get_dynamic_explanation(feature, shap_value):
                "The time of the incident falls within normal hours and does not appear unusual."
     return f"Key factor: {feature}"
 
+# ────────── Optimized Claim File Lookup ────────── #
 def get_latest_claim_file(claim_id):
-    response = s3.list_objects_v2(Bucket=bucket, Prefix=input_prefix)
-    for obj in response.get("Contents", []):
-        key = obj["Key"]
-        if claim_id in key and key.endswith(".json"):
-            return key
-    return None
+    key = f"{input_prefix}clean-claim-{claim_id}.json"
+    try:
+        s3.head_object(Bucket=bucket, Key=key)
+        return key
+    except s3.exceptions.ClientError as e:
+        if e.response["Error"]["Code"] == "404":
+            return None
+        else:
+            raise
 
 def get_timestamp_str():
     return datetime.now(timezone("US/Eastern")).strftime("%B-%d-%Y_%I-%M-%p")
@@ -132,19 +135,19 @@ def invoke():
     except Exception as e:
         return jsonify(error=str(e), traceback=traceback.format_exc()), 500
 
-# ────────── Auto-trigger when run in ECS ────────── #
+# ────────── ECS Trigger ────────── #
 if __name__ == "__main__":
     import requests
     import time
     from threading import Thread
 
-    # Start Flask in background thread
+    # Start Flask server in background
     Thread(target=lambda: app.run(host="0.0.0.0", port=8080)).start()
 
-    # Allow Flask to boot
+    # Let server boot
     time.sleep(2)
 
-    # Read CLAIM_ID from environment and trigger
+    # Read claim_id from env
     claim_id = os.getenv("CLAIM_ID")
     if not claim_id:
         print("❌ CLAIM_ID environment variable not set.")
@@ -156,3 +159,6 @@ if __name__ == "__main__":
         print("✅ Prediction result:", response.json())
     except Exception as e:
         print("❌ Internal invocation failed:", str(e))
+
+    # ✅ Final ECS-safe exit
+    os._exit(0)

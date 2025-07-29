@@ -8,6 +8,7 @@ import traceback
 import json
 from datetime import datetime
 from pytz import timezone
+import requests 
 
 # ────────── Flask App ────────── #
 app = Flask(__name__)

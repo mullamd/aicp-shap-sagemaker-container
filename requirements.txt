@@ -1,7 +1,8 @@
-flask==2.3.2  # ✅ Required for serving real-time endpoint
-xgboost==1.7.6             # Stable for production
-shap==0.44.1               # Compatible with latest xgboost
+flask==2.3.2               # ✅ Required for serving real-time endpoint
+xgboost==1.7.6             # ✅ Stable for production
+shap==0.44.1               # ✅ Compatible with latest xgboost
 numpy==1.24.4
 pandas==1.5.3
 scikit-learn==1.2.2
 boto3==1.34.115            # ✅ Required for AWS S3 interactions
+requests==2.31.0           # ✅ Required for S3 → Redshift/URL testing

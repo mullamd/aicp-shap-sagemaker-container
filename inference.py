@@ -138,7 +138,7 @@ def invoke():
     except Exception as e:
         return jsonify(error=str(e), traceback=traceback.format_exc()), 500
 
-# ────────── ECS Trigger ────────── #
+# ────────── ECS Trigger (Optional) ────────── #
 def wait_for_server(url="http://localhost:8080/ping", timeout=10):
     for _ in range(timeout):
         try:
@@ -150,7 +150,7 @@ def wait_for_server(url="http://localhost:8080/ping", timeout=10):
         time.sleep(1)
     return False
 
-if __name__ == "__main__":
+if __name__ == "__main__" and os.getenv("RUN_ECS_TRIGGER", "false").lower() == "true":
     # Start Flask server in background
     Thread(target=lambda: app.run(host="0.0.0.0", port=8080)).start()
 
@@ -159,7 +159,6 @@ if __name__ == "__main__":
         print("❌ Server did not start within timeout.")
         os._exit(1)
 
-    # Read claim_id from env
     claim_id = os.getenv("CLAIM_ID")
     if not claim_id:
         print("❌ CLAIM_ID environment variable not set.")
@@ -172,5 +171,5 @@ if __name__ == "__main__":
     except Exception as e:
         print("❌ Internal invocation failed:", str(e))
 
-    # ✅ Final ECS-safe exit
+    # Final exit for ECS
     os._exit(0)

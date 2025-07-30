@@ -9,7 +9,6 @@ import json
 from datetime import datetime
 from pytz import timezone
 
-# ────────── Flask App ────────── #
 app = Flask(__name__)
 s3 = boto3.client("s3")
 
@@ -17,13 +16,11 @@ bucket = "aicp-claims-data"
 input_prefix = "processed/DQ-validated-claims-data/"
 output_prefix = "processed/fraud-predicted-claims-data/"
 
-# ────────── Load Model ────────── #
 model_path = os.path.join(os.environ.get("SM_MODEL_DIR", "/opt/ml/model"), "xgboost-model.json")
 model = xgb.Booster()
 model.load_model(model_path)
 explainer = shap.Explainer(model)
 
-# ────────── Feature Definitions ────────── #
 features = [
     "claim_to_damage_ratio",
     "vehicle_age",
@@ -65,79 +62,68 @@ def get_latest_claim_file(claim_id):
 def get_timestamp_str():
     return datetime.now(timezone("US/Eastern")).strftime("%B-%d-%Y_%I-%M-%p")
 
-@app.route("/ping", methods=["GET"])
-def ping():
-    return jsonify(status="ok"), 200
+def process_claim(claim_id):
+    key = get_latest_claim_file(claim_id)
+    if not key:
+        raise FileNotFoundError(f"Claim file not found for {claim_id}")
 
-@app.route("/invocations", methods=["POST"])
-def invoke():
-    try:
-        payload = request.get_json()
-        claim_id = payload.get("claim_id")
-        if not claim_id:
-            return jsonify(error="Missing claim_id"), 400
+    raw = s3.get_object(Bucket=bucket, Key=key)["Body"].read().decode("utf-8").strip()
+    claim_data = json.loads(raw.splitlines()[0]) if "\n" in raw else json.loads(raw)
 
-        key = get_latest_claim_file(claim_id)
-        if not key:
-            return jsonify(error=f"Claim file not found for {claim_id}"), 404
+    current_year = datetime.now().year
+    features_values = [
+        round(claim_data["claim_amount_requested"] / claim_data["estimated_damage_cost"], 2),
+        current_year - int(claim_data["vehicle_year"]),
+        claim_data.get("previous_claims_count", 0),
+        (datetime.strptime(claim_data["date_of_loss"], "%Y-%m-%d") -
+         datetime.strptime(claim_data["policy_start_date"], "%Y-%m-%d")).days,
+        0.95 if "chicago" in claim_data["accident_location"].lower() else 0.6,
+        3
+    ]
 
-        raw = s3.get_object(Bucket=bucket, Key=key)["Body"].read().decode("utf-8").strip()
-        claim_data = json.loads(raw.splitlines()[0]) if "\n" in raw else json.loads(raw)
+    dmatrix = xgb.DMatrix(np.array([features_values]), feature_names=features)
+    fraud_prob = model.predict(dmatrix)[0]
+    fraud_class = int(fraud_prob > 0.5)
+    shap_values = explainer(dmatrix)
 
-        current_year = datetime.now().year
-        features_values = [
-            round(claim_data["claim_amount_requested"] / claim_data["estimated_damage_cost"], 2),
-            current_year - int(claim_data["vehicle_year"]),
-            claim_data.get("previous_claims_count", 0),
-            (datetime.strptime(claim_data["date_of_loss"], "%Y-%m-%d") - datetime.strptime(claim_data["policy_start_date"], "%Y-%m-%d")).days,
-            0.95 if "chicago" in claim_data["accident_location"].lower() else 0.6,
-            3
-        ]
+    shap_score_map = dict(zip(features, [round(float(val) * 10, 2) for val in shap_values.values[0]]))
+    top_indices = np.argsort(np.abs(shap_values.values[0]))[::-1][:3]
+    explanations = [get_dynamic_explanation(features[i], shap_values.values[0][i]) for i in top_indices]
+    fraud_explanation = " | ".join(explanations)
 
-        dmatrix = xgb.DMatrix(np.array([features_values]), feature_names=features)
-        fraud_prob = model.predict(dmatrix)[0]
-        fraud_class = int(fraud_prob > 0.5)
-        shap_values = explainer(dmatrix)
+    result = {
+        "claim_id": claim_id,docker build -t aicp-shap-sagemaker-container .
+        "fraud_prediction": "Fraud" if fraud_class else "Not Fraud",
+        "fraud_score": round(float(fraud_prob) * 10, 1),
+        "fraud_explanation": fraud_explanation,
+        "shap_values": shap_score_map
+    }
 
-        shap_score_map = dict(zip(features, [round(float(val) * 10, 2) for val in shap_values.values[0]]))
-        top_indices = np.argsort(np.abs(shap_values.values[0]))[::-1][:3]
-        explanations = [get_dynamic_explanation(features[i], shap_values.values[0][i]) for i in top_indices]
-        fraud_explanation = " | ".join(explanations)
+    output_filename = f"fraud-claim-{claim_id}__{get_timestamp_str()}.json"
+    output_key = f"{output_prefix}{output_filename}"
 
-        result = {
-            "claim_id": claim_id,
-            "fraud_prediction": "Fraud" if fraud_class else "Not Fraud",
-            "fraud_score": round(float(fraud_prob) * 10, 1),
-            "fraud_explanation": fraud_explanation,
-            "shap_values": shap_score_map
-        }
+    s3.put_object(
+        Bucket=bucket,
+        Key=output_key,
+        Body=json.dumps(result),
+        ContentType="application/json"
+    )
 
-        output_filename = f"fraud-claim-{claim_id}__{get_timestamp_str()}.json"
-        output_key = f"{output_prefix}{output_filename}"
+    print(f"✅ Saved result to s3://{bucket}/{output_key}")
+    print(f"✅ Result: {result}")
 
-        s3.put_object(Bucket=bucket, Key=output_key, Body=json.dumps(result), ContentType="application/json")
-        print(f"✅ Saved result to s3://{bucket}/{output_key}")
-        return jsonify(result), 200
-
-    except Exception as e:
-        return jsonify(error=str(e), traceback=traceback.format_exc()), 500
-
-# ────────── ECS Automation or Flask ────────── #
+# ────────── MAIN ────────── #
 if __name__ == "__main__":
-    run_trigger = os.environ.get("RUN_ECS_TRIGGER", "false").lower() == "true"
-    if run_trigger:
-        claim_id = os.environ.get("CLAIM_ID")
-        if not claim_id:
-            print("❌ CLAIM_ID not found in environment variables.")
-            exit(1)
+    claim_id = os.environ.get("CLAIM_ID")
+    if not claim_id:
+        print("❌ CLAIM_ID environment variable is required.")
+        exit(1)
 
-        print(f"🚀 Triggering fraud prediction for {claim_id}")
-        with app.test_client() as client:
-            response = client.post("/invocations", json={"claim_id": claim_id})
-            if response.status_code == 200:
-                print("✅ Prediction result:", response.json)
-            else:
-                print("❌ Prediction failed:", response.status_code, response.json)
-        exit(0)
-    else:
-        app.run(host="0.0.0.0", port=8080)
+    print(f"🚀 Running fraud detection for: {claim_id}")
+    try:
+        process_claim(claim_id)
+        print("✅ Done. Exiting.")
+    except Exception as e:
+        print(f"🔥 Error: {e}")
+        traceback.print_exc()
+        exit(1)

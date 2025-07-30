@@ -57,17 +57,17 @@ def get_dynamic_explanation(feature, shap_value):
                "The time of the incident falls within normal hours and does not appear unusual."
     return f"Key factor: {feature}"
 
-# ────────── Optimized Claim File Lookup ────────── #
+# ────────── Updated Claim File Lookup ────────── #
 def get_latest_claim_file(claim_id):
-    key = f"{input_prefix}clean-claim-{claim_id}.json"
+    prefix = f"{input_prefix}clean-claim-{claim_id}__"
     try:
-        s3.head_object(Bucket=bucket, Key=key)
-        return key
-    except s3.exceptions.ClientError as e:
-        if e.response["Error"]["Code"] == "404":
-            return None
-        else:
-            raise
+        response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+        if "Contents" in response:
+            sorted_objects = sorted(response["Contents"], key=lambda x: x["LastModified"], reverse=True)
+            return sorted_objects[0]["Key"]
+    except Exception as e:
+        print(f"❌ S3 list_objects_v2 failed: {e}")
+    return None
 
 def get_timestamp_str():
     return datetime.now(timezone("US/Eastern")).strftime("%B-%d-%Y_%I-%M-%p")

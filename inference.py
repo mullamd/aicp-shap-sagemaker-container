@@ -8,7 +8,6 @@ import traceback
 import json
 from datetime import datetime
 from pytz import timezone
-import requests
 
 # ────────── Flask App ────────── #
 app = Flask(__name__)
@@ -55,7 +54,6 @@ def get_dynamic_explanation(feature, shap_value):
                "The time of the incident falls within normal hours and does not appear unusual."
     return f"Key factor: {feature}"
 
-# ────────── File Utils ────────── #
 def get_latest_claim_file(claim_id):
     prefix = f"{input_prefix}clean-claim-{claim_id}"
     response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
@@ -67,7 +65,6 @@ def get_latest_claim_file(claim_id):
 def get_timestamp_str():
     return datetime.now(timezone("US/Eastern")).strftime("%B-%d-%Y_%I-%M-%p")
 
-# ────────── Flask Routes ────────── #
 @app.route("/ping", methods=["GET"])
 def ping():
     return jsonify(status="ok"), 200
@@ -77,7 +74,6 @@ def invoke():
     try:
         payload = request.get_json()
         claim_id = payload.get("claim_id")
-
         if not claim_id:
             return jsonify(error="Missing claim_id"), 400
 
@@ -93,8 +89,7 @@ def invoke():
             round(claim_data["claim_amount_requested"] / claim_data["estimated_damage_cost"], 2),
             current_year - int(claim_data["vehicle_year"]),
             claim_data.get("previous_claims_count", 0),
-            (datetime.strptime(claim_data["date_of_loss"], "%Y-%m-%d") -
-             datetime.strptime(claim_data["policy_start_date"], "%Y-%m-%d")).days,
+            (datetime.strptime(claim_data["date_of_loss"], "%Y-%m-%d") - datetime.strptime(claim_data["policy_start_date"], "%Y-%m-%d")).days,
             0.95 if "chicago" in claim_data["accident_location"].lower() else 0.6,
             3
         ]
@@ -120,31 +115,29 @@ def invoke():
         output_filename = f"fraud-claim-{claim_id}__{get_timestamp_str()}.json"
         output_key = f"{output_prefix}{output_filename}"
 
-        s3.put_object(
-            Bucket=bucket,
-            Key=output_key,
-            Body=json.dumps(result),
-            ContentType="application/json"
-        )
-
+        s3.put_object(Bucket=bucket, Key=output_key, Body=json.dumps(result), ContentType="application/json")
         print(f"✅ Saved result to s3://{bucket}/{output_key}")
         return jsonify(result), 200
 
     except Exception as e:
         return jsonify(error=str(e), traceback=traceback.format_exc()), 500
 
-# ────────── Run ECS/Flask Mode ────────── #
+# ────────── ECS Automation or Flask ────────── #
 if __name__ == "__main__":
-    run_ecs = os.environ.get("RUN_ECS_TRIGGER", "").lower() == "true"
-    claim_id = os.environ.get("CLAIM_ID")
+    run_trigger = os.environ.get("RUN_ECS_TRIGGER", "false").lower() == "true"
+    if run_trigger:
+        claim_id = os.environ.get("CLAIM_ID")
+        if not claim_id:
+            print("❌ CLAIM_ID not found in environment variables.")
+            exit(1)
 
-    if run_ecs and claim_id:
         print(f"🚀 Triggering fraud prediction for {claim_id}")
-        try:
-            response = requests.post("http://localhost:8080/invocations", json={"claim_id": claim_id})
-            print(f"✅ Prediction result: {response.json()}")
-        except Exception as e:
-            print(f"❌ Failed to call inference: {str(e)}")
+        with app.test_client() as client:
+            response = client.post("/invocations", json={"claim_id": claim_id})
+            if response.status_code == 200:
+                print("✅ Prediction result:", response.json)
+            else:
+                print("❌ Prediction failed:", response.status_code, response.json)
         exit(0)
-
-    app.run(host="0.0.0.0", port=8080)
+    else:
+        app.run(host="0.0.0.0", port=8080)

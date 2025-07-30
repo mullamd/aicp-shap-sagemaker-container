@@ -8,9 +8,6 @@ import traceback
 import json
 from datetime import datetime
 from pytz import timezone
-import time
-import requests
-from threading import Thread
 
 # ────────── Flask App ────────── #
 app = Flask(__name__)
@@ -57,17 +54,15 @@ def get_dynamic_explanation(feature, shap_value):
                "The time of the incident falls within normal hours and does not appear unusual."
     return f"Key factor: {feature}"
 
-# ────────── Updated Claim File Lookup ────────── #
+# ────────── Optimized Claim File Lookup ────────── #
 def get_latest_claim_file(claim_id):
-    prefix = f"{input_prefix}clean-claim-{claim_id}__"
-    try:
-        response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
-        if "Contents" in response:
-            sorted_objects = sorted(response["Contents"], key=lambda x: x["LastModified"], reverse=True)
-            return sorted_objects[0]["Key"]
-    except Exception as e:
-        print(f"❌ S3 list_objects_v2 failed: {e}")
-    return None
+    prefix = f"{input_prefix}clean-claim-{claim_id}"
+    response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+    objects = response.get("Contents", [])
+    if not objects:
+        return None
+    # Return the latest match
+    return sorted(objects, key=lambda x: x["LastModified"], reverse=True)[0]["Key"]
 
 def get_timestamp_str():
     return datetime.now(timezone("US/Eastern")).strftime("%B-%d-%Y_%I-%M-%p")
@@ -138,38 +133,6 @@ def invoke():
     except Exception as e:
         return jsonify(error=str(e), traceback=traceback.format_exc()), 500
 
-# ────────── ECS Trigger (Optional) ────────── #
-def wait_for_server(url="http://localhost:8080/ping", timeout=10):
-    for _ in range(timeout):
-        try:
-            r = requests.get(url)
-            if r.status_code == 200:
-                return True
-        except Exception:
-            pass
-        time.sleep(1)
-    return False
-
-if __name__ == "__main__" and os.getenv("RUN_ECS_TRIGGER", "false").lower() == "true":
-    # Start Flask server in background
-    Thread(target=lambda: app.run(host="0.0.0.0", port=8080)).start()
-
-    # Wait until server is ready
-    if not wait_for_server():
-        print("❌ Server did not start within timeout.")
-        os._exit(1)
-
-    claim_id = os.getenv("CLAIM_ID")
-    if not claim_id:
-        print("❌ CLAIM_ID environment variable not set.")
-        os._exit(1)
-
-    try:
-        print(f"🚀 Triggering fraud prediction for {claim_id}")
-        response = requests.post("http://localhost:8080/invocations", json={"claim_id": claim_id})
-        print("✅ Prediction result:", response.json())
-    except Exception as e:
-        print("❌ Internal invocation failed:", str(e))
-
-    # Final exit for ECS
-    os._exit(0)
+# ────────── Run Flask Server ────────── #
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)

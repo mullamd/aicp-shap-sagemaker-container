@@ -9,7 +9,7 @@ import json
 from datetime import datetime
 from pytz import timezone
 
-# ────────── Flask App ────────── #
+# ───────── Flask App ───────── #
 app = Flask(__name__)
 s3 = boto3.client("s3")
 
@@ -17,13 +17,13 @@ bucket = "aicp-claims-data"
 input_prefix = "processed/DQ-validated-claims-data/"
 output_prefix = "processed/fraud-predicted-claims-data/"
 
-# ────────── Load Model ────────── #
+# ───────── Load Model ───────── #
 model_path = os.path.join(os.environ.get("SM_MODEL_DIR", "/opt/ml/model"), "xgboost-model.json")
 model = xgb.Booster()
 model.load_model(model_path)
 explainer = shap.Explainer(model)
 
-# ────────── Features ────────── #
+# ───────── Features ───────── #
 features = [
     "claim_to_damage_ratio",
     "vehicle_age",
@@ -33,7 +33,7 @@ features = [
     "incident_time_hour"
 ]
 
-# ────────── SHAP Explanation Logic ────────── #
+# ───────── SHAP Explanation Logic ───────── #
 def get_dynamic_explanation(feature, shap_value):
     explanations = {
         "location_risk_score": (
@@ -69,7 +69,7 @@ def get_dynamic_explanation(feature, shap_value):
     }
     return explanations.get(feature, f"Key factor: {feature}")
 
-# ────────── Helpers ────────── #
+# ───────── Helpers ───────── #
 def get_latest_claim_file(claim_id):
     prefix = f"{input_prefix}clean-claim-{claim_id}"
     response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
@@ -81,7 +81,7 @@ def get_latest_claim_file(claim_id):
 def get_timestamp_str():
     return datetime.now(timezone("US/Eastern")).strftime("%B-%d-%Y_%I-%M-%p")
 
-# ────────── Main Prediction Logic ────────── #
+# ───────── Main Prediction Logic ───────── #
 def process_claim(claim_id):
     key = get_latest_claim_file(claim_id)
     if not key:
@@ -91,13 +91,51 @@ def process_claim(claim_id):
     claim_data = json.loads(raw.splitlines()[0]) if "\n" in raw else json.loads(raw)
 
     current_year = datetime.now().year
+
+    # ───── Location Risk Logic ───── #
+    accident_location = claim_data["accident_location"].lower()
+    high_risk_map = {
+        "new york": 0.95,
+        "chicago": 0.93,
+        "los angeles": 0.91,
+        "houston": 0.89,
+        "detroit": 0.9,
+        "miami": 0.85,
+        "baltimore": 0.75,
+        "new orleans": 0.72,
+        "oakland": 0.7,
+        "philadelphia": 0.68
+    }
+    location_risk_score = 0.6  # default low-risk
+    for city, score in high_risk_map.items():
+        if city in accident_location:
+            location_risk_score = score
+            break
+
+    # ───── Dynamic Incident Time ───── #
+    incident_time_str = claim_data.get("incident_time", "08:00 AM")
+    try:
+        incident_time_hour = datetime.strptime(incident_time_str, "%I:%M %p").hour
+    except:
+        incident_time_hour = 8  # fallback
+
+    # ───── Feature Engineering ───── #
+    damage = claim_data["estimated_damage_cost"]
+    claim = claim_data["claim_amount_requested"]
+    claim_to_damage_ratio = round(claim / damage, 2) if damage else 0.0
+
+    previous_claims = claim_data.get("previous_claims_count", 0)
+    vehicle_year = int(claim_data.get("vehicle_year", current_year))
+    policy_days = (datetime.strptime(claim_data["date_of_loss"], "%Y-%m-%d") -
+                   datetime.strptime(claim_data["policy_start_date"], "%Y-%m-%d")).days
+
     features_values = [
-        round(claim_data["claim_amount_requested"] / claim_data["estimated_damage_cost"], 2),
-        current_year - int(claim_data["vehicle_year"]),
-        claim_data.get("previous_claims_count", 0),
-        (datetime.strptime(claim_data["date_of_loss"], "%Y-%m-%d") - datetime.strptime(claim_data["policy_start_date"], "%Y-%m-%d")).days,
-        0.95 if "chicago" in claim_data["accident_location"].lower() else 0.6,
-        3  # static placeholder
+        claim_to_damage_ratio,
+        current_year - vehicle_year,
+        previous_claims,
+        policy_days,
+        location_risk_score,
+        incident_time_hour
     ]
 
     dmatrix = xgb.DMatrix(np.array([features_values]), feature_names=features)
@@ -126,7 +164,7 @@ def process_claim(claim_id):
     print(f"✅ Saved result to s3://{bucket}/{output_key}")
     return result
 
-# ────────── Flask Routes ────────── #
+# ───────── Flask Routes ───────── #
 @app.route("/ping", methods=["GET"])
 def ping():
     return jsonify(status="ok"), 200
@@ -145,7 +183,7 @@ def invoke():
     except Exception as e:
         return jsonify(error=str(e), traceback=traceback.format_exc()), 500
 
-# ────────── ECS Automation ────────── #
+# ───────── ECS Automation ───────── #
 if __name__ == "__main__":
     run_trigger = os.environ.get("RUN_ECS_TRIGGER", "false").lower() == "true"
     claim_id = os.environ.get("CLAIM_ID")

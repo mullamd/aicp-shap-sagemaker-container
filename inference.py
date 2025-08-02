@@ -69,6 +69,21 @@ def get_dynamic_explanation(feature, shap_value):
     }
     return explanations.get(feature, f"Key factor: {feature}")
 
+# ───────── Decision Logic ───────── #
+def determine_decision(prediction, score, ratio, risk, prev_claims):
+    if prediction == "Fraud" or score >= 8.0:
+        return "Suspicious"
+    elif (
+        prediction == "Not Fraud"
+        and score <= 2.0
+        and ratio <= 1.5
+        and risk < 0
+        and prev_claims == 0
+    ):
+        return "Auto-Approve"
+    else:
+        return "Manual Review"
+
 # ───────── Helpers ───────── #
 def get_latest_claim_file(claim_id):
     prefix = f"{input_prefix}clean-claim-{claim_id}"
@@ -149,12 +164,24 @@ def process_claim(claim_id):
         get_dynamic_explanation(features[i], shap_values.values[0][i]) for i in top_indices
     ])
 
+    fraud_prediction = "Fraud" if fraud_class else "Not Fraud"
+    fraud_score = round(float(fraud_prob) * 10, 1)
+
+    claim_status = determine_decision(
+        prediction=fraud_prediction,
+        score=fraud_score,
+        ratio=claim_to_damage_ratio,
+        risk=location_risk_score,
+        prev_claims=previous_claims
+    )
+
     result = {
         "claim_id": claim_id,
-        "fraud_prediction": "Fraud" if fraud_class else "Not Fraud",
-        "fraud_score": round(float(fraud_prob) * 10, 1),
+        "fraud_prediction": fraud_prediction,
+        "fraud_score": fraud_score,
         "fraud_explanation": fraud_explanation,
-        "shap_values": shap_score_map
+        "shap_values": shap_score_map,
+        "claim_status": claim_status
     }
 
     output_filename = f"fraud-claim-{claim_id}__{get_timestamp_str()}.json"

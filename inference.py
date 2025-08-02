@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify 
 import boto3
 import xgboost as xgb
 import shap
@@ -9,7 +9,7 @@ import json
 from datetime import datetime
 from pytz import timezone
 
-# ───────── Flask App ───────── #
+# ─────── Flask App ─────── #
 app = Flask(__name__)
 s3 = boto3.client("s3")
 
@@ -17,13 +17,13 @@ bucket = "aicp-claims-data"
 input_prefix = "processed/DQ-validated-claims-data/"
 output_prefix = "processed/fraud-predicted-claims-data/"
 
-# ───────── Load Model ───────── #
+# ─────── Load Model ─────── #
 model_path = os.path.join(os.environ.get("SM_MODEL_DIR", "/opt/ml/model"), "xgboost-model.json")
 model = xgb.Booster()
 model.load_model(model_path)
 explainer = shap.Explainer(model)
 
-# ───────── Features ───────── #
+# ─────── Features ─────── #
 features = [
     "claim_to_damage_ratio",
     "vehicle_age",
@@ -33,7 +33,7 @@ features = [
     "incident_time_hour"
 ]
 
-# ───────── SHAP Explanation Logic ───────── #
+# ─────── SHAP Explanation Logic ─────── #
 def get_dynamic_explanation(feature, shap_value):
     explanations = {
         "location_risk_score": (
@@ -69,7 +69,7 @@ def get_dynamic_explanation(feature, shap_value):
     }
     return explanations.get(feature, f"Key factor: {feature}")
 
-# ───────── Decision Logic ───────── #
+# ─────── Decision Logic ─────── #
 def determine_decision(prediction, score, ratio, risk, prev_claims):
     if prediction == "Fraud" or score >= 8.0:
         return "Suspicious"
@@ -84,7 +84,7 @@ def determine_decision(prediction, score, ratio, risk, prev_claims):
     else:
         return "Manual Review"
 
-# ───────── Helpers ───────── #
+# ─────── Helpers ─────── #
 def get_latest_claim_file(claim_id):
     prefix = f"{input_prefix}clean-claim-{claim_id}"
     response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
@@ -96,7 +96,7 @@ def get_latest_claim_file(claim_id):
 def get_timestamp_str():
     return datetime.now(timezone("US/Eastern")).strftime("%B-%d-%Y_%I-%M-%p")
 
-# ───────── Main Prediction Logic ───────── #
+# ─────── Main Prediction Logic ─────── #
 def process_claim(claim_id):
     key = get_latest_claim_file(claim_id)
     if not key:
@@ -153,6 +153,8 @@ def process_claim(claim_id):
         incident_time_hour
     ]
 
+    raw_feature_map = dict(zip(features, features_values))
+
     dmatrix = xgb.DMatrix(np.array([features_values]), feature_names=features)
     fraud_prob = model.predict(dmatrix)[0]
     fraud_class = int(fraud_prob > 0.5)
@@ -181,6 +183,7 @@ def process_claim(claim_id):
         "fraud_score": fraud_score,
         "fraud_explanation": fraud_explanation,
         "shap_values": shap_score_map,
+        "raw_features": raw_feature_map,
         "claim_status": claim_status
     }
 
@@ -191,7 +194,7 @@ def process_claim(claim_id):
     print(f"✅ Saved result to s3://{bucket}/{output_key}")
     return result
 
-# ───────── Flask Routes ───────── #
+# ─────── Flask Routes ─────── #
 @app.route("/ping", methods=["GET"])
 def ping():
     return jsonify(status="ok"), 200
@@ -210,7 +213,7 @@ def invoke():
     except Exception as e:
         return jsonify(error=str(e), traceback=traceback.format_exc()), 500
 
-# ───────── ECS Automation ───────── #
+# ─────── ECS Automation ─────── #
 if __name__ == "__main__":
     run_trigger = os.environ.get("RUN_ECS_TRIGGER", "false").lower() == "true"
     claim_id = os.environ.get("CLAIM_ID")
